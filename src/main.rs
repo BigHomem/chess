@@ -1,5 +1,5 @@
-#![allow(unused)]
-use std::{cmp::{Ord, Ordering::{Greater, Less}}};
+//#![allow(unused)]
+use std::{cmp::Ord};
 use crossterm::{event::{read, Event, KeyCode}};
 
 enum Input {
@@ -46,10 +46,6 @@ impl Point {
     fn tup(&self) -> (i32, i32) {
         (self.0, self.1)
     }
-    fn clamp(&self, Point(xmin, ymin): &Point, Point(xmax, ymax): &Point) -> Self {
-        Point(self.0.clamp(*xmin, *xmax),
-              self.1.clamp(*ymin, *ymax))
-    }
     fn out_bounds(&self) -> bool {
         if self.0 < 1 || self.0 > 8 {return true}
         if self.1 < 1 || self.1 > 8 {return true}
@@ -86,7 +82,6 @@ impl Line {
 #[derive(Clone)]
 enum SelectionType {
     Cursor,
-    Move,
     NoSelection
 }
 #[derive(Clone)]
@@ -181,9 +176,7 @@ impl Movement {
     fn new((x, y): (i32, i32), move_type: MoveType) -> Self {
         match move_type {
             MoveType::Jump => Movement { points: vec![Point(x, y)], move_type },
-            MoveType::Default => Movement { points: Line(Point(x, y)).path(), move_type },
-            MoveType::Attack => Movement { points: Line(Point(x, y)).path(), move_type },
-            MoveType::Move => Movement { points: Line(Point(x, y)).path(), move_type },
+            _ => Movement { points: Line(Point(x, y)).path(), move_type }
         }
     }
     fn mirror_4(&self) -> Vec<Self> {
@@ -342,10 +335,11 @@ impl<'a> Game {
     }
     fn move_piece(&mut self, point1: &Point, point2: &Point) {
         let piece = self.get_tile_mut(point1).piece.clone().unwrap();
-        if let PieceType::Pawn(_) = piece.piece_type {
-            self.get_tile_mut(point2).piece = Some(Piece { piece_type: PieceType::Pawn(true), color: piece.color });
-        } else {
-            self.get_tile_mut(point2).piece = Some(piece);
+        match piece.piece_type {
+            PieceType::Pawn(_) => self.get_tile_mut(point2).piece = Some(Piece { piece_type: PieceType::Pawn(true), color: piece.color }),
+            PieceType::Rook(_) => self.get_tile_mut(point2).piece = Some(Piece { piece_type: PieceType::Rook(true), color: piece.color }),
+            PieceType::King(_) => self.get_tile_mut(point2).piece = Some(Piece { piece_type: PieceType::King(true), color: piece.color }),
+            _ => self.get_tile_mut(point2).piece = Some(piece),
         }
         self.get_tile_mut(point1).piece = None;
     }
