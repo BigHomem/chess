@@ -1,6 +1,6 @@
 #![allow(unused)]
-use std::{cmp::{Ord, Ordering::{Greater, Less}}, collections::btree_map::Iter, vec};
-use crossterm::{event::{read, Event, KeyCode}, cursor};
+use std::{cmp::{Ord, Ordering::{Greater, Less}}};
+use crossterm::{event::{read, Event, KeyCode}};
 
 enum Input {
     Up,
@@ -46,6 +46,15 @@ impl Point {
     fn tup(&self) -> (i32, i32) {
         (self.0, self.1)
     }
+    fn clamp(&self, Point(xmin, ymin): &Point, Point(xmax, ymax): &Point) -> Self {
+        Point(self.0.clamp(*xmin, *xmax),
+              self.1.clamp(*ymin, *ymax))
+    }
+    fn out_bounds(&self) -> bool {
+        if self.0 < 1 || self.0 > 8 {return true}
+        if self.1 < 1 || self.1 > 8 {return true}
+        false 
+    }
 }
 struct Line(Point);
 impl Line {
@@ -71,12 +80,11 @@ impl Line {
                 }
                 result
             }
-            _ => panic!("Invalid Line")
         }
     }
 } 
 #[derive(Clone)]
-enum Selection {
+enum SelectionType {
     Cursor,
     Move,
     NoSelection
@@ -86,7 +94,7 @@ struct Tile {
     position: Point,
     piece: Option<Piece>,
     color: Color,
-    selected: Selection
+    selected: SelectionType
 }
 impl Tile {
     fn render(&self) -> String {
@@ -98,7 +106,7 @@ impl Tile {
         let color_ansi = if let Color::White = self.color {"\x1b[48;5;250m"} else {"\x1b[48;5;245m"};
         let colored = format!("{}{}",color_ansi, piece);
         let tile_selected = match self.selected {
-            Selection::Cursor => format!("{}\x1b[38;5;0m<", colored),
+            SelectionType::Cursor => format!("{}\x1b[38;5;0m<", colored),
             _ => format!("{} ",colored)
         };
         tile_selected
@@ -230,29 +238,40 @@ enum Color {
     White,
     Black
 }
+impl Color {
+    fn opposite(&self) -> Self {
+        if let Color::White = self {Color::Black} else {Color::White}
+    }
+    fn eq(&self, other_color: &Self) -> bool {
+        match (self, other_color) {
+            (Color::White, Color::White) | (Color::Black, Color::Black) => true,
+            _ => false
+        }
+    }
+    fn render(&self) -> String {
+        match self {
+            Color::White => "white",
+            Color::Black => "black"
+        }.to_string()
+    }
+}
 struct Game {
     board: Vec<Tile>,
     cursor: Point,
-    selected: Option<Tile>,
+    selected: Option<Point>,
     turn: Color
 }
-impl Game {
+impl<'a> Game {
     fn render(&self) {
         print!("\x1B[2J");
-        println!("\x1B[H ");
+        println!("\x1B[H{}'s turn", self.turn.render());
         for line in self.board.chunks_exact(8) {
             let rendered_line: String = line.iter()
                 .map(|line| line.render())
                 .fold("".to_string(), |acc, x| format!("{}{}", acc, x));
             println!("{}", rendered_line);
         }
-        println!("\x1B[0m cursor at: [{:?}], selected: [{}]", 
-            self.cursor,
-            match &self.selected {
-                None => "No Selection".to_string(),
-                Some(tile) => tile.piece.as_ref().unwrap().render()
-            }
-        );
+        println!("\x1B[0m ");
     }
     fn new_board() -> Vec<Tile> {
         let mut board: Vec<Tile> = vec![];
@@ -260,7 +279,7 @@ impl Game {
             for x in 1..=8 {
                 board.push(Tile{
                     position: Point(x, y),
-                    selected: Selection::NoSelection,
+                    selected: SelectionType::NoSelection,
                     piece:  match (x, y) {
                                 (_, 2) => Some(Piece{piece_type: PieceType::Pawn(false), color: Color::Black}),
                                 (_, 7) => Some(Piece{piece_type: PieceType::Pawn(false), color: Color::White}),
@@ -278,25 +297,65 @@ impl Game {
         board
     }
     fn can_move(&self, Point(x1, y1): &Point, Point(x2, y2): &Point) -> bool {
-        let from_tile = self.board.get((x1 + (y1 - 1) * 8 - 1) as usize).unwrap();
-        let piece = &from_tile.piece;
-        //check if there's a piece in the tile vvv
-        if piece.is_none() {return false}
-
-        //check if tile is reacheable with possible moves
-        let mut result = false;
-        for movement in piece.as_ref().unwrap().moves().iter() {
-            for point in movement.points.iter() {
-                if from_tile.position.add(point).eq(&Point(*x2, *y2)) {
-                    result = true;
-                    break
-                }
-            }
+        match self.valid_moves(&Point(*x1, *y1)) {
+            Some(moves) => {
+                moves.iter()
+                     .map(|point|(&Point(*x1, *y1)).add(point).eq(&Point(*x2, *y2)))
+                     .any(|x| x && true)
+            },
+            None => false
         }
-
-        result
     }
-    fn handle_input(&mut self) {
+    fn valid_moves(&self, Point(x, y): &Point) -> Option<Vec<Point>> {
+        let from_tile = self.get_tile(&Point(*x, *y));
+        let piece = if from_tile.piece.is_none() {return None} else {from_tile.piece.as_ref().unwrap()};
+        let mut valid_moves: Vec<Point> = vec![]; 
+        for movement in piece.moves() {
+
+            let mut found_enemy = false;
+
+            movement.points.iter()
+                .take_while(|point| {
+
+                    let move_point = point.add(&Point(*x, *y));
+                    let mut result = !move_point.out_bounds();
+
+                    if result {match self.get_tile(&move_point) {
+                        Tile {position: _, piece: Some(to_piece), ..} => {
+                            result = match (&piece.color, &to_piece.color, &movement.move_type) {
+                                (_, _, MoveType::Move) => false,
+                                (Color::White, Color::Black, _) | (Color::Black, Color::White, _) if !found_enemy => {
+                                    found_enemy = true;
+                                    true
+                                },
+                                _ => false
+                            };
+                        }
+                        Tile {position: _, piece: None, ..} => {result =  if let MoveType::Attack = movement.move_type {false} else {true}}
+                    }}
+                    result
+
+                })
+                .for_each(|point| valid_moves.push(point.clone()));
+        };
+        Some(valid_moves)
+    }
+    fn move_piece(&mut self, point1: &Point, point2: &Point) {
+        let piece = self.get_tile_mut(point1).piece.clone().unwrap();
+        if let PieceType::Pawn(_) = piece.piece_type {
+            self.get_tile_mut(point2).piece = Some(Piece { piece_type: PieceType::Pawn(true), color: piece.color });
+        } else {
+            self.get_tile_mut(point2).piece = Some(piece);
+        }
+        self.get_tile_mut(point1).piece = None;
+    }
+    fn get_tile(&'a self, Point(x, y): &Point) -> &Tile {
+        self.board.get((x + (y - 1) * 8 - 1) as usize).unwrap()
+    }
+    fn get_tile_mut(&mut self, Point(x, y): &Point) -> &mut Tile {
+        self.board.get_mut((x + (y - 1) * 8 - 1) as usize).unwrap()
+    }
+    fn handle_input(&'a mut self) {
         let Point(x, y) = self.cursor;
         let event = get_input();
         match event {
@@ -305,27 +364,30 @@ impl Game {
             Input::Left => self.cursor = self.cursor.add(&Point(-1, 0)),
             Input::Right => self.cursor = self.cursor.add(&Point(1, 0)),
             Input::Select if self.selected.is_none() => {
-                match self.board.get((x + (y - 1) * 8 - 1) as usize) {
-                    Some(tile) if tile.piece.is_some() => self.selected = Some(tile.clone()),
-                    _ => return
-                } 
+                self.selected = Some(Point(x, y));
             },
             Input::Select if self.selected.is_some() => {
-                let can_move = self.can_move(&self.selected.as_ref().unwrap().position ,&Point(x, y));
-                println!("{:?}", can_move);
-                get_input();
+                let from_tile = self.selected.to_owned().unwrap();
+                let can_move = self.can_move(&self.selected.as_ref().unwrap(), &Point(x, y));
+                let valid_turn = if let Some(x) = &self.get_tile(&from_tile).piece {
+                    x.color.eq(&self.turn)
+                } else {false};
+                if can_move && valid_turn {
+                    self.move_piece(&from_tile, &Point(x, y));
+                    self.turn = self.turn.opposite();
+                }
                 self.selected = None;
             }
             _ => return   
             }
     }
-    fn update(&mut self) -> &mut Self {
+    fn update(&'a mut self) -> &mut Self {
         self.handle_input();
         self.cursor = Point(self.cursor.0.clamp(1, 8), self.cursor.1.clamp(1, 8));
         for tile in &mut self.board {
-            if let Selection::Cursor = tile.selected {tile.selected = Selection::NoSelection}
+            if let SelectionType::Cursor = tile.selected {tile.selected = SelectionType::NoSelection}
             if tile.position.0 == self.cursor.0 && tile.position.1 == self.cursor.1 {
-                tile.selected = Selection::Cursor;
+                tile.selected = SelectionType::Cursor;
             }
         }
         self
